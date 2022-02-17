@@ -1,6 +1,7 @@
-import express from "express";
-import WebSocket from "ws";
 import http from "http";
+import { Server } from "socket.io";
+import { instrument } from "@socket.io/admin-ui";
+import express from "express";
 const app = express();
 
 // view 설정 및 render
@@ -10,11 +11,76 @@ app.use("/public", express.static(__dirname + "/public"));
 app.get("/", (req, res) => res.render("home"));
 app.get("/*", (req, res) => res.redirect("/"));
 
-const handleListen = () => console.log("Listening on http://localhost:3000");
 // app.listen(3000, handleListen);
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server }); //http & websocket 둘다 작동  // http서버 위에서 ws 서버 만든거임
+const httpServer = http.createServer(app);
+const wsServer = new Server(httpServer, {
+  cors: {
+    origin: ["https://admin.socket.io"],
+    credentials: true,
+  },
+});
+instrument(wsServer, {
+  auth: false,
+});
 
+function getPublicRooms() {
+  const {
+    sockets: {
+      adapter: { sids, rooms },
+    },
+  } = wsServer;
+
+  const publicRooms = [];
+  rooms.forEach((_, key) => {
+    if (sids.get(key) === undefined) {
+      publicRooms.push(key);
+    }
+  });
+  return publicRooms;
+}
+
+function getCountRoom(roomName) {
+  return wsServer.sockets.adapter.rooms.get(roomName)?.size;
+}
+
+wsServer.on("connection", (socket) => {
+  socket["nickname"] = "Anon";
+  wsServer.sockets.emit("room_change", getPublicRooms());
+
+  socket.onAny((event) => {
+    console.log(`Socket Event:${event}`);
+  });
+  socket.on("enter_room", (roomName, nickName, done) => {
+    socket.join(roomName);
+    socket["nickname"] = nickName;
+    console.log(done);
+    done(getCountRoom(roomName));
+    socket
+      .to(roomName)
+      .emit("welcome", socket.nickname, getCountRoom(roomName));
+    wsServer.sockets.emit("room_change", getPublicRooms());
+  });
+
+  socket.on("disconnecting", () => {
+    socket.rooms.forEach((room) =>
+      socket.to(room).emit("bye", socket.nickname, getCountRoom(room) - 1)
+    );
+  });
+
+  socket.on("disconnect", () => {
+    wsServer.sockets.emit("room_change", getPublicRooms());
+  });
+
+  socket.on("new_message", (msg, room, done) => {
+    socket.to(room).emit("new_message", `${socket.nickname}: ${msg}`);
+    done();
+  });
+  socket.on("nickname", (nickname) => {
+    socket["nickname"] = nickname;
+  });
+});
+// const wss = new WebSocket.Server({ server }); //http & websocket 둘다 작동  // http서버 위에서 ws 서버 만든거임
+/* 
 function onSocketClose() {
   console.log("Disconnected from the Browser.");
 }
@@ -38,4 +104,6 @@ wss.on("connection", (socket) => {
     }
   });
 });
-server.listen(3000, handleListen);
+*/
+const handleListen = () => console.log("Listening on http://localhost:3000");
+httpServer.listen(3000, handleListen);
